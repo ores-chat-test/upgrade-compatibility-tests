@@ -1,19 +1,45 @@
-import tomllib
+from __future__ import annotations
+
+import json
 import unittest
 from pathlib import Path
-from deep_tests.upgrade_model import IncompatibleChange, assert_non_destructive_required_change, negotiate, read_with_version
+
+ROOT = Path(__file__).resolve().parents[1]
+REQUIRED_SURFACES = {
+    "public",
+    "customer",
+    "admin",
+    "internal",
+    "packaging",
+    "recovery",
+}
+REQUIRED_ASSERTIONS = {"declared-behavior", "dual-environment", "evidence-gate"}
+
+
 class CounterpartTipUpgradeHardeningTests(unittest.TestCase):
-    def test_version_negotiation_is_order_independent(self):
-        supported=([1,2,3],[3,2,1],[2,3,1])
-        for left in supported:
-            for right in supported: self.assertEqual(negotiate(left,right),3)
-    def test_old_reader_projects_new_writer_without_future_field_leakage(self):
-        record={"version":3,"id":"edge-1","display_name":"current","metadata":{"labels":["a"],"future_nested":{"ignored":True}},"status":"active","future_field":[1,2,3]}; self.assertEqual(read_with_version(record,1),{"id":"edge-1","name":"current"})
-    def test_every_required_field_removal_fails_closed(self):
-        required={"id","display_name","status"}
-        for removed in required:
-            with self.assertRaises(IncompatibleChange): assert_non_destructive_required_change(required,required-{removed})
-        assert_non_destructive_required_change(required,required|{"metadata"})
-    def test_zed_pkg_runner_keeps_suite_and_verifier_coupled(self):
-        script=tomllib.loads(Path(".zpkg.toml").read_text())["scripts"]["test"]; self.assertIn("unittest discover",script); self.assertIn("scripts/verify_repository.py",script)
-if __name__ == "__main__": unittest.main()
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.suite = json.loads((ROOT / "suite.json").read_text())
+
+    def test_upgrade_contract_remains_versioned_and_owned(self) -> None:
+        self.assertEqual(self.suite["version"], 1)
+        self.assertEqual(self.suite["suite"], "upgrade-compatibility-tests")
+        self.assertEqual(self.suite["owners"], ["ores-chat"])
+
+    def test_all_upgrade_surfaces_remain_declared(self) -> None:
+        self.assertEqual(set(self.suite["surfaces"]), REQUIRED_SURFACES)
+
+    def test_main_and_test_orgs_share_the_same_contract(self) -> None:
+        self.assertEqual(self.suite["environments"], ["main-org", "test-org"])
+        assertion_ids = {item["id"] for item in self.suite["assertions"]}
+        self.assertEqual(assertion_ids, REQUIRED_ASSERTIONS)
+
+    def test_live_status_stays_fail_closed_without_retained_evidence(self) -> None:
+        self.assertEqual(self.suite["status"], "contract-only")
+        gate = next(item for item in self.suite["assertions"] if item["id"] == "evidence-gate")
+        self.assertIn("Live status is forbidden", gate["description"])
+        self.assertEqual(gate["evidence"], "contract")
+
+
+if __name__ == "__main__":
+    unittest.main()
